@@ -2,6 +2,11 @@ import { create } from 'zustand';
 import type { Message } from '@/types';
 import { get as apiGet, put as apiPut } from '@/utils/request';
 import { wsClient, type SecurityAlertData } from '@/utils/websocket';
+import { useAuthStore } from './authStore';
+
+function getCurrentUserId(): string | null {
+  return useAuthStore.getState().user?.id ?? null;
+}
 
 interface MessageState {
   messages: Message[];
@@ -28,7 +33,9 @@ export const useMessageStore = create<MessageState>((set, getState) => ({
 
   fetchMessages: async () => {
     try {
-      const data = (await apiGet('/messages')) as {
+      const userId = getCurrentUserId();
+      if (!userId) return;
+      const data = (await apiGet(`/messages?receiverId=${encodeURIComponent(userId)}`)) as {
         total: number;
         unread: number;
         list: Message[];
@@ -43,7 +50,9 @@ export const useMessageStore = create<MessageState>((set, getState) => ({
 
   fetchUnreadCount: async () => {
     try {
-      const data = (await apiGet('/messages/unread')) as { count: number };
+      const userId = getCurrentUserId();
+      if (!userId) return;
+      const data = (await apiGet(`/messages/unread?receiverId=${encodeURIComponent(userId)}`)) as { count: number };
       if (data && typeof data.count === 'number') {
         set({ unreadCount: data.count });
       }
@@ -68,7 +77,9 @@ export const useMessageStore = create<MessageState>((set, getState) => ({
 
   markAllRead: async () => {
     try {
-      await apiPut('/messages/read-all');
+      const userId = getCurrentUserId();
+      if (!userId) return;
+      await apiPut('/messages/read-all', { receiverId: userId });
       set((state) => ({
         messages: state.messages.map((m) => ({ ...m, read: true })),
         unreadCount: 0,
