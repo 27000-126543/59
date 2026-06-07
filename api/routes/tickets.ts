@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
-import { tickets, messages, exhibitions, exhibits, users } from '../data/mockData.js';
+import { tickets, exhibitions, exhibits, messages, users } from '../data/mockData.js';
 import type { Ticket, Message } from '../../shared/types.js';
+import { broadcastMessage } from '../websocket.js';
 
 const router = Router();
 
@@ -13,13 +14,12 @@ const timeSlots = [
   '19:00-21:00',
 ];
 
-const historicalFlow: Record<string, number[]> = {
-  '09:00-11:00': [120, 180, 220, 190, 210],
-  '11:00-13:00': [90, 140, 170, 160, 150],
-  '13:00-15:00': [150, 200, 260, 240, 230],
-  '15:00-17:00': [180, 230, 290, 270, 280],
-  '17:00-19:00': [100, 160, 200, 180, 170],
-  '19:00-21:00': [60, 110, 150, 130, 120],
+const categoryHeatScores: Record<string, number> = {
+  bronze: 85,
+  painting: 92,
+  ceramic: 78,
+  jade: 88,
+  other: 70,
 };
 
 function isWeekend(dateStr: string): boolean {
@@ -28,21 +28,67 @@ function isWeekend(dateStr: string): boolean {
   return day === 0 || day === 6;
 }
 
-function hasSpecialExhibition(_dateStr: string): boolean {
-  return false;
+function hasSpecialExhibition(dateStr: string): boolean {
+  const target = new Date(dateStr).getTime();
+  return exhibitions.some((ex) => {
+    if (!ex.isSpecial) return false;
+    if (ex.status !== 'ongoing') return false;
+    const start = new Date(ex.startDate).getTime();
+    const end = new Date(ex.endDate).getTime();
+    return target >= start && target <= end;
+  });
 }
 
-function getAverageHeatScore(): number {
+function getActiveSpecialExhibitions(dateStr: string) {
+  const target = new Date(dateStr).getTime();
+  return exhibitions.filter((ex) => {
+    if (!ex.isSpecial || ex.status !== 'ongoing') return false;
+    const start = new Date(ex.startDate).getTime();
+    const end = new Date(ex.endDate).getTime();
+    return target >= start && target <= end;
+  });
+}
+
+function getAverageHeatScoreByCategory(): number {
   if (exhibits.length === 0) return 70;
-  const baseScores: Record<string, number> = {
-    bronze: 85,
-    painting: 90,
-    ceramic: 80,
-    jade: 88,
-    other: 70,
-  };
-  const sum = exhibits.reduce((acc, e) => acc + (baseScores[e.category] || 70), 0);
+  const sum = exhibits.reduce((acc, e) => acc + (categoryHeatScores[e.category] || 70), 0);
   return sum / exhibits.length;
+}
+
+function getHistoricalFlowBySlot(slot: string): number {
+  const slotTickets = tickets.filter((t) => t.timeSlot === slot && t.status !== 'cancelled');
+  if (slotTickets.length === 0) {
+    const baseFlows: Record<string, number> = {
+      '09:00-11:00': 150,
+      '11:00-13:00': 120,
+      '13:00-15:00': 180,
+      '15:00-17:00': 200,
+      '17:00-19:00': 130,
+      '19:00-21:00': 80,
+    };
+    return baseFlows[slot] || 100;
+  }
+  return slotTickets.length * 15 + Math.floor(Math.random() * 30);
+}
+
+function getRecommendationNote(
+  avgFlow: number,
+  isWeekendFlag: boolean,
+  hasSpecial: boolean
+): { recommended: boolean; note: string } {
+  if (avgFlow < 100 && !isWeekendFlag) {
+    return { recommended: true, note: '该时段人流较少，推荐参观' };
+  }
+  if (avgFlow < 130) {
+    return { recommended: true, note: '该时段人流适中，参观体验较好' };
+  }
+  if (avgFlow > 200) {
+    return { recommended: false, note: '该时段人流高峰，建议错峰参观' };
+  }
+  if (hasSpecial && avgFlow > 150) {
+    return { recommended: false, note: '特展期间人流较多，请合理安排' };
+  }
+  return { recommended: false, note: '' };
 }
 
 router.get('/pricing', async (req: Request, res: Response): Promise<void> => {
@@ -51,13 +97,14 @@ router.get('/pricing', async (req: Request, res: Response): Promise<void> => {
 
   const weekend = isWeekend(targetDate);
   const hasSpecial = hasSpecialExhibition(targetDate);
-  const avgHeat = getAverageHeatScore();
+  const specialExhibitions = getActiveSpecialExhibitions(targetDate);
+  const avgHeat = getAverageHeatScoreByCategory();
 
-  const pricing = timeSlots.map((slot) => {
-    const flowData = historicalFlow[slot] || [100, 100, 100, 100, 100];
-    const avgFlow = flowData.reduce((a, b) => a + b, 0) / flowData.length;
+  const slotPricing = timeSlots.map((slot) => {
+    const avgFlow = getHistoricalFlowBySlot(slot);
 
-    let price = 80;
+    let basePrice = 80;
+    let price = basePrice;
 
     if (weekend) price *= 1.15;
     if (hasSpecial) price *= 1.2;
@@ -70,23 +117,41 @@ router.get('/pricing', async (req: Request, res: Response): Promise<void> => {
     else if (avgFlow < 100) price *= 0.9;
 
     price = Math.round(price);
+    const { recommended, note } = getRecommendationNote(avgFlow, weekend, hasSpecial);
 
     return {
       timeSlot: slot,
-      basePrice: 80,
+      basePrice,
       finalPrice: price,
       historicalAvgFlow: Math.round(avgFlow),
+      remainingCapacity: Math.max(0, 300 - Math.round(avgFlow)),
       isWeekend: weekend,
       hasSpecialExhibition: hasSpecial,
       heatScore: Math.round(avgHeat),
+      recommended,
+      recommendationNote: note,
+      heatLevel: avgFlow < 100 ? 'low' : avgFlow < 150 ? 'medium' : avgFlow < 200 ? 'high' : 'full',
     };
+  });
+
+  slotPricing.sort((a, b) => {
+    if (a.recommended && !b.recommended) return -1;
+    if (!a.recommended && b.recommended) return 1;
+    return a.historicalAvgFlow - b.historicalAvgFlow;
   });
 
   res.json({
     success: true,
     data: {
       date: targetDate,
-      timeSlots: pricing,
+      isWeekend: weekend,
+      hasSpecialExhibition: hasSpecial,
+      specialExhibitions: specialExhibitions.map((e) => ({
+        id: e.id,
+        title: e.title,
+        subtitle: e.subtitle,
+      })),
+      timeSlots: slotPricing,
     },
   });
 });
@@ -149,6 +214,7 @@ router.post('/book', async (req: Request, res: Response): Promise<void> => {
   };
 
   messages.push(newMessage);
+  broadcastMessage(newMessage);
 
   res.json({
     success: true,

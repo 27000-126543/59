@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   MapPin,
@@ -15,14 +15,32 @@ import {
   Info,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/authStore';
+import { get } from '@/utils/request';
+
+interface HallFlowData {
+  id: string;
+  name: string;
+  currentCount: number;
+  maxCapacity: number;
+  occupancyRate: number;
+  densityLevel: 'low' | 'medium' | 'high' | 'critical';
+}
+
+interface FlowResponse {
+  totalCurrent: number;
+  totalMax: number;
+  overallOccupancy: number;
+  overallDensityLevel: 'low' | 'medium' | 'high' | 'critical';
+  halls: HallFlowData[];
+}
 
 interface Hall {
   id: string;
   name: string;
   position: { x: number; y: number; w: number; h: number };
-  density: number;
   color: string;
   exhibits: { id: string; name: string }[];
+  hallId: string;
 }
 
 interface ExhibitDetail {
@@ -36,9 +54,9 @@ interface ExhibitDetail {
 const halls: Hall[] = [
   {
     id: '1',
+    hallId: 'hall-001',
     name: '第一展厅 · 青铜器',
     position: { x: 20, y: 30, w: 160, h: 100 },
-    density: 35,
     color: '#8B6341',
     exhibits: [
       { id: 'e1', name: '后母戊鼎' },
@@ -48,9 +66,9 @@ const halls: Hall[] = [
   },
   {
     id: '2',
+    hallId: 'hall-002',
     name: '第二展厅 · 书画',
     position: { x: 200, y: 30, w: 160, h: 100 },
-    density: 78,
     color: '#6B4A31',
     exhibits: [
       { id: 'e4', name: '清明上河图' },
@@ -59,31 +77,31 @@ const halls: Hall[] = [
   },
   {
     id: '3',
-    name: '第三展厅 · 玉器',
+    hallId: 'hall-003',
+    name: '第三展厅 · 陶瓷',
     position: { x: 380, y: 30, w: 160, h: 100 },
-    density: 52,
     color: '#543A27',
-    exhibits: [
-      { id: 'e6', name: '翠玉白菜' },
-      { id: 'e7', name: '玉琮王' },
-    ],
-  },
-  {
-    id: '4',
-    name: '第四展厅 · 陶瓷',
-    position: { x: 20, y: 160, w: 160, h: 100 },
-    density: 42,
-    color: '#A68154',
     exhibits: [
       { id: 'e8', name: '汝窑天青釉洗' },
       { id: 'e9', name: '青花瓷瓶' },
     ],
   },
   {
+    id: '4',
+    hallId: 'hall-004',
+    name: '第四展厅 · 玉器',
+    position: { x: 20, y: 160, w: 160, h: 100 },
+    color: '#A68154',
+    exhibits: [
+      { id: 'e6', name: '翠玉白菜' },
+      { id: 'e7', name: '玉琮王' },
+    ],
+  },
+  {
     id: '5',
+    hallId: 'hall-005',
     name: '第五展厅 · 丝绸之路',
     position: { x: 200, y: 160, w: 160, h: 100 },
-    density: 92,
     color: '#3E2723',
     exhibits: [
       { id: 'e10', name: '鎏金银壶' },
@@ -92,23 +110,15 @@ const halls: Hall[] = [
   },
   {
     id: '6',
+    hallId: 'hall-006',
     name: '第六展厅 · 明清珍宝',
     position: { x: 380, y: 160, w: 160, h: 100 },
-    density: 28,
     color: '#8B6341',
     exhibits: [
       { id: 'e12', name: '金冠' },
       { id: 'e13', name: '龙袍' },
     ],
   },
-];
-
-const recommendedRoute = [
-  { hallId: '6', name: '第六展厅 · 明清珍宝', exhibits: ['金冠'] },
-  { hallId: '1', name: '第一展厅 · 青铜器', exhibits: ['后母戊鼎', '四羊方尊'] },
-  { hallId: '4', name: '第四展厅 · 陶瓷', exhibits: ['汝窑天青釉洗'] },
-  { hallId: '3', name: '第三展厅 · 玉器', exhibits: ['翠玉白菜'] },
-  { hallId: '2', name: '第二展厅 · 书画', exhibits: ['清明上河图'] },
 ];
 
 const currentExhibit: ExhibitDetail = {
@@ -125,21 +135,22 @@ const currentExhibit: ExhibitDetail = {
 };
 
 const getDensityColor = (density: number) => {
-  if (density < 40) return 'from-emerald-400 to-emerald-500';
-  if (density < 70) return 'from-amber-400 to-amber-500';
+  if (density < 50) return 'from-emerald-400 to-emerald-500';
+  if (density < 75) return 'from-amber-400 to-amber-500';
   return 'from-red-400 to-red-500';
 };
 
 const getDensityBg = (density: number) => {
-  if (density < 40) return 'bg-emerald-500';
-  if (density < 70) return 'bg-amber-500';
+  if (density < 50) return 'bg-emerald-500';
+  if (density < 75) return 'bg-amber-500';
   return 'bg-red-500';
 };
 
 const getDensityLabel = (density: number) => {
-  if (density < 40) return '舒适';
-  if (density < 70) return '适中';
-  return '拥挤';
+  if (density < 50) return '舒适';
+  if (density < 75) return '适中';
+  if (density < 90) return '拥挤';
+  return '非常拥挤';
 };
 
 export default function VisitorGuide() {
@@ -148,20 +159,72 @@ export default function VisitorGuide() {
   const [mounted, setMounted] = useState(false);
   const [selectedHall, setSelectedHall] = useState<string | null>('1');
   const [avoidCrowd, setAvoidCrowd] = useState(true);
-  const [densities, setDensities] = useState(halls.map((h) => h.density));
+  const [flowData, setFlowData] = useState<FlowResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const fetchFlow = async () => {
+    try {
+      const data = await get<FlowResponse>('/security/flow');
+      setFlowData(data);
+    } catch (error) {
+      console.error('获取人流数据失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     setMounted(true);
-    const interval = setInterval(() => {
-      setDensities((prev) =>
-        prev.map((d) => Math.max(5, Math.min(98, d + Math.floor(Math.random() * 11) - 5)))
-      );
-    }, 5000);
+    fetchFlow();
+    const interval = setInterval(fetchFlow, 5000);
     return () => clearInterval(interval);
   }, []);
 
+  const hallDensities = useMemo(() => {
+    const map: Record<string, number> = {};
+    halls.forEach((hall) => {
+      const flow = flowData?.halls.find(
+        (f) => f.id === hall.hallId || f.name.includes(hall.name.split('·')[1]?.trim())
+      );
+      if (flow) {
+        map[hall.id] = flow.occupancyRate;
+      } else {
+        map[hall.id] = Math.floor(Math.random() * 60) + 20;
+      }
+    });
+    return map;
+  }, [flowData]);
+
+  const recommendedRoute = useMemo(() => {
+    const hallList = halls.map((hall) => ({
+      ...hall,
+      density: hallDensities[hall.id] ?? 50,
+    }));
+
+    if (avoidCrowd) {
+      hallList.sort((a, b) => a.density - b.density);
+    }
+
+    return hallList.slice(0, 5).map((hall) => ({
+      hallId: hall.id,
+      name: hall.name,
+      exhibits: hall.exhibits.slice(0, 2).map((e) => e.name),
+      density: hall.density,
+    }));
+  }, [avoidCrowd, hallDensities]);
+
   const selectedHallData = halls.find((h) => h.id === selectedHall);
-  const crowdedHalls = halls.filter((h, idx) => densities[idx] >= 80);
+  const crowdedHalls = halls.filter((h) => (hallDensities[h.id] ?? 0) >= 80);
+
+  const displayName = user?.name || user?.realName || user?.username || '尊敬的观众';
+
+  if (loading && !flowData) {
+    return (
+      <div className="flex items-center justify-center py-20 min-h-screen bg-museum-cream">
+        <div className="text-museum-brown-500">加载导览数据中...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-museum-cream">
@@ -174,11 +237,17 @@ export default function VisitorGuide() {
           <div className="flex items-start justify-between">
             <div>
               <h1 className="font-serif text-2xl font-bold text-museum-brown-900">
-                欢迎，{user?.name || user?.realName || user?.username || '尊敬的观众'}
+                欢迎，{displayName}
               </h1>
               <p className="mt-1 flex items-center gap-2 text-sm text-museum-brown-500">
                 <MapPin className="h-4 w-4 text-museum-gold-600" />
                 当前位置：博物馆大厅入口
+                {flowData && (
+                  <span className="ml-2 inline-flex items-center gap-1 text-museum-brown-400">
+                    <Users className="h-3.5 w-3.5" />
+                    实时客流 {flowData.totalCurrent} 人
+                  </span>
+                )}
               </p>
             </div>
             <div className="flex items-center gap-3">
@@ -203,7 +272,7 @@ export default function VisitorGuide() {
                   博物馆平面图
                 </h3>
                 {crowdedHalls.length > 0 && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-3 py-1 text-xs font-medium text-red-700 animate-pulse-red">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-3 py-1 text-xs font-medium text-red-700 animate-pulse">
                     <Users className="h-3 w-3" />
                     {crowdedHalls.length}处拥挤
                   </span>
@@ -231,8 +300,8 @@ export default function VisitorGuide() {
                   <line x1="280" y1="20" x2="280" y2="270" stroke="#D4BF9E" strokeWidth="1" strokeDasharray="4 4" />
                   <line x1="10" y1="145" x2="550" y2="145" stroke="#D4BF9E" strokeWidth="1" strokeDasharray="4 4" />
 
-                  {halls.map((hall, idx) => {
-                    const density = densities[idx];
+                  {halls.map((hall) => {
+                    const density = hallDensities[hall.id] ?? 50;
                     const isCrowded = density >= 80;
                     const isSelected = selectedHall === hall.id;
                     const inRoute = recommendedRoute.some((r) => r.hallId === hall.id);
@@ -281,7 +350,7 @@ export default function VisitorGuide() {
                           height="10"
                           rx="5"
                           fill={
-                            density < 40 ? '#22c55e' : density < 70 ? '#f59e0b' : '#ef4444'
+                            density < 50 ? '#22c55e' : density < 75 ? '#f59e0b' : '#ef4444'
                           }
                         />
                         <text
@@ -296,13 +365,15 @@ export default function VisitorGuide() {
                         </text>
 
                         {isCrowded && (
-                          <g className="animate-pulse">
+                          <g>
                             <circle
                               cx={hall.position.x + hall.position.w - 15}
                               cy={hall.position.y + 18}
                               r="10"
                               fill="#ef4444"
-                            />
+                            >
+                              <animate attributeName="opacity" values="1;0.5;1" dur="1s" repeatCount="indefinite" />
+                            </circle>
                             <circle
                               cx={hall.position.x + hall.position.w - 15}
                               cy={hall.position.y + 18}
@@ -405,14 +476,17 @@ export default function VisitorGuide() {
                     <h4 className="font-medium text-museum-brown-900">{selectedHallData.name}</h4>
                     <span
                       className={`rounded-full px-2.5 py-0.5 text-xs font-medium text-white ${getDensityBg(
-                        densities[halls.indexOf(selectedHallData)]
+                        hallDensities[selectedHallData.id] ?? 50
                       )}`}
                     >
-                      {getDensityLabel(densities[halls.indexOf(selectedHallData)])}
+                      {getDensityLabel(hallDensities[selectedHallData.id] ?? 50)}
                     </span>
                   </div>
                   <p className="text-sm text-museum-brown-600">
                     主要展品：{selectedHallData.exhibits.map((e) => e.name).join('、')}
+                  </p>
+                  <p className="mt-1 text-xs text-museum-brown-500">
+                    当前拥挤度：{hallDensities[selectedHallData.id] ?? '--'}%
                   </p>
                 </div>
               )}
@@ -444,34 +518,37 @@ export default function VisitorGuide() {
                 </div>
 
                 <div className="space-y-3">
-                  {halls.map((hall, idx) => (
-                    <div key={hall.id} className="flex items-center gap-3">
-                      <span className="w-32 flex-shrink-0 text-sm text-museum-brown-700 truncate">
-                        {hall.name}
-                      </span>
-                      <div className="flex-1 h-6 rounded-full bg-museum-brown-100 overflow-hidden">
-                        <div
-                          className={`h-full bg-gradient-to-r ${getDensityColor(densities[idx])} rounded-full transition-all duration-1000 flex items-center justify-end pr-2`}
-                          style={{ width: `${densities[idx]}%` }}
-                        >
-                          {densities[idx] > 20 && (
-                            <span className="text-xs font-medium text-white">{densities[idx]}%</span>
-                          )}
+                  {halls.map((hall) => {
+                    const density = hallDensities[hall.id] ?? 50;
+                    return (
+                      <div key={hall.id} className="flex items-center gap-3">
+                        <span className="w-32 flex-shrink-0 text-sm text-museum-brown-700 truncate">
+                          {hall.name}
+                        </span>
+                        <div className="flex-1 h-6 rounded-full bg-museum-brown-100 overflow-hidden">
+                          <div
+                            className={`h-full bg-gradient-to-r ${getDensityColor(density)} rounded-full transition-all duration-1000 flex items-center justify-end pr-2`}
+                            style={{ width: `${Math.min(density, 100)}%` }}
+                          >
+                            {density > 20 && (
+                              <span className="text-xs font-medium text-white">{density}%</span>
+                            )}
+                          </div>
                         </div>
+                        <span
+                          className={`w-14 text-right text-xs font-medium ${
+                            density < 50
+                              ? 'text-emerald-600'
+                              : density < 75
+                              ? 'text-amber-600'
+                              : 'text-red-600'
+                          }`}
+                        >
+                          {getDensityLabel(density)}
+                        </span>
                       </div>
-                      <span
-                        className={`w-14 text-right text-xs font-medium ${
-                          densities[idx] < 40
-                            ? 'text-emerald-600'
-                            : densities[idx] < 70
-                            ? 'text-amber-600'
-                            : 'text-red-600'
-                        }`}
-                      >
-                        {getDensityLabel(densities[idx])}
-                      </span>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -504,7 +581,17 @@ export default function VisitorGuide() {
                       <div className="flex-1 pb-3">
                         <div className="flex items-center justify-between">
                           <h4 className="font-medium text-museum-brown-900">{item.name}</h4>
-                          <ChevronRight className="h-4 w-4 text-museum-brown-400" />
+                          <span
+                            className={`text-xs ${
+                              (item.density ?? 50) < 50
+                                ? 'text-emerald-600'
+                                : (item.density ?? 50) < 75
+                                ? 'text-amber-600'
+                                : 'text-red-600'
+                            }`}
+                          >
+                            {getDensityLabel(item.density ?? 50)}
+                          </span>
                         </div>
                         <p className="mt-1 text-sm text-museum-brown-500">
                           重点展品：{item.exhibits.join('、')}

@@ -6,9 +6,162 @@ import {
   halls,
   exhibits,
   workOrders,
+  users,
+  messages,
 } from '../data/mockData.js';
+import type { Message } from '../../shared/types.js';
+import { broadcastMessage } from '../websocket.js';
 
 const router = Router();
+
+interface MonthlyReport {
+  id: string;
+  month: string;
+  year: number;
+  monthIndex: number;
+  generatedAt: string;
+  pushedToPhone: boolean;
+  pushedAt?: string;
+  data: {
+    revenue: {
+      total: number;
+      ticketCount: number;
+      avgPrice: number;
+      changePercent: number;
+    };
+    visitors: {
+      total: number;
+      changePercent: number;
+    };
+    exhibitions: Array<{
+      id: string;
+      title: string;
+      visitorCount: number;
+      targetVisitorCount: number;
+      revenue: number;
+    }>;
+    topExhibits: Array<{
+      id: string;
+      name: string;
+      category: string;
+      heatScore: number;
+    }>;
+    conservation: {
+      totalInspections: number;
+      completedInspections: number;
+      pendingWorkOrders: number;
+      activeWorkOrders: number;
+      completedWorkOrders: number;
+    };
+    security: {
+      totalAlerts: number;
+      unresolvedAlerts: number;
+      avgDensity: number;
+      criticalCount: number;
+    };
+    satisfaction: number;
+  };
+}
+
+const monthlyReports: MonthlyReport[] = [];
+
+function generateReportData(year: number, month: number) {
+  const totalRevenue = 120000 + Math.floor(Math.random() * 30000);
+  const totalTickets = 1400 + Math.floor(Math.random() * 600);
+  const totalVisitors = 2000 + Math.floor(Math.random() * 1000);
+  const avgTicketPrice = Math.round((totalRevenue / totalTickets) * 100) / 100;
+
+  const revenueChange = Math.round((Math.random() * 25 - 5) * 10) / 10;
+  const visitorChange = Math.round((Math.random() * 20 - 3) * 10) / 10;
+
+  const exhibitionStats = exhibitions.map((ex) => ({
+    id: ex.id,
+    title: ex.title,
+    visitorCount: ex.visitorCount + Math.floor(Math.random() * 500),
+    targetVisitorCount: ex.targetVisitorCount,
+    revenue: (ex.visitorCount + Math.floor(Math.random() * 500)) * (70 + Math.floor(Math.random() * 30)),
+  }));
+
+  const topExhibits = exhibits
+    .slice()
+    .sort((a, b) => getHeatScore(b.category) - getHeatScore(a.category))
+    .slice(0, 5)
+    .map((e) => ({
+      id: e.id,
+      name: e.name,
+      category: e.category,
+      heatScore: getHeatScore(e.category),
+    }));
+
+  const conservationStats = {
+    totalInspections: 40 + Math.floor(Math.random() * 20),
+    completedInspections: 30 + Math.floor(Math.random() * 15),
+    pendingWorkOrders: workOrders.filter((w) => w.status === 'pending_approval').length,
+    activeWorkOrders: workOrders.filter((w) => w.status === 'in_progress').length,
+    completedWorkOrders: workOrders.filter((w) => w.status === 'completed').length + Math.floor(Math.random() * 5),
+  };
+
+  const securityStats = {
+    totalAlerts: 8 + Math.floor(Math.random() * 10),
+    unresolvedAlerts: 1 + Math.floor(Math.random() * 4),
+    avgDensity: 50 + Math.floor(Math.random() * 30),
+    criticalCount: Math.floor(Math.random() * 3),
+  };
+
+  const satisfactionAvg = Math.round((4.0 + Math.random() * 0.9) * 10) / 10;
+
+  return {
+    revenue: {
+      total: totalRevenue,
+      ticketCount: totalTickets,
+      avgPrice: avgTicketPrice,
+      changePercent: revenueChange,
+    },
+    visitors: {
+      total: totalVisitors,
+      changePercent: visitorChange,
+    },
+    exhibitions: exhibitionStats,
+    topExhibits,
+    conservation: conservationStats,
+    security: securityStats,
+    satisfaction: satisfactionAvg,
+  };
+}
+
+function getOrCreateMonthlyReport(year: number, month: number, force = false): MonthlyReport {
+  const existing = monthlyReports.find((r) => r.year === year && r.monthIndex === month);
+
+  if (existing && !force) {
+    return existing;
+  }
+
+  const report: MonthlyReport = {
+    id: `report-${year}-${String(month + 1).padStart(2, '0')}`,
+    month: `${year}年${month + 1}月`,
+    year,
+    monthIndex: month,
+    generatedAt: new Date().toISOString(),
+    pushedToPhone: false,
+    data: generateReportData(year, month),
+  };
+
+  if (existing && force) {
+    const idx = monthlyReports.indexOf(existing);
+    report.pushedToPhone = existing.pushedToPhone;
+    report.pushedAt = existing.pushedAt;
+    monthlyReports[idx] = report;
+  } else {
+    monthlyReports.push(report);
+  }
+
+  return report;
+}
+
+function isFirstDayOfMonth(): boolean {
+  const now = new Date();
+  return now.getDate() === 1;
+}
 
 router.get('/revenue', async (_req: Request, res: Response): Promise<void> => {
   const today = new Date().toISOString().split('T')[0];
@@ -295,74 +448,140 @@ function getHeatScore(category: string): number {
   return baseScores[category] || 70;
 }
 
-router.get('/monthly-report', async (_req: Request, res: Response): Promise<void> => {
+router.get('/monthly-report', async (req: Request, res: Response): Promise<void> => {
   const now = new Date();
   const year = now.getFullYear();
   const month = now.getMonth();
+  const autoGenerate = isFirstDayOfMonth();
 
-  const totalRevenue = 128450;
-  const totalTickets = 1602;
-  const totalVisitors = 2358;
-  const avgTicketPrice = Math.round((totalRevenue / totalTickets) * 100) / 100;
+  const force = req.query.force === 'true';
+  const report = getOrCreateMonthlyReport(year, month, autoGenerate || force);
 
-  const revenueChange = 12.5;
-  const visitorChange = 8.3;
-
-  const exhibitionStats = exhibitions.map((ex) => ({
-    id: ex.id,
-    title: ex.title,
-    visitorCount: ex.visitorCount,
-    targetVisitorCount: ex.targetVisitorCount,
-    revenue: ex.visitorCount * 80,
-  }));
-
-  const topExhibits = exhibits
-    .slice()
-    .sort((a, b) => getHeatScore(b.category) - getHeatScore(a.category))
-    .slice(0, 5)
-    .map((e) => ({
-      id: e.id,
-      name: e.name,
-      category: e.category,
-      heatScore: getHeatScore(e.category),
-    }));
-
-  const conservationStats = {
-    totalInspections: 45,
-    completedInspections: 38,
-    pendingWorkOrders: workOrders.filter((w) => w.status === 'pending_approval').length,
-    activeWorkOrders: workOrders.filter((w) => w.status === 'in_progress').length,
-    completedWorkOrders: workOrders.filter((w) => w.status === 'completed').length,
-  };
-
-  const securityStats = {
-    totalAlerts: 12,
-    unresolvedAlerts: 3,
-    avgDensity: 62,
-    criticalCount: 1,
-  };
-
-  const satisfactionAvg = 4.4;
+  if (autoGenerate) {
+    const directors = users.filter((u) => u.role === 'director');
+    directors.forEach((director) => {
+      const msg: Message = {
+        id: 'msg-' + Date.now() + Math.random().toString(36).slice(2, 6),
+        type: 'notification',
+        title: `${report.month}月度运营报告已生成`,
+        content: `${report.month}博物馆运营报告已自动生成，总收入 ¥${report.data.revenue.total.toLocaleString()}，请前往查看详情。`,
+        senderId: 'system',
+        senderName: '数据分析系统',
+        receiverId: director.id,
+        receiverName: director.name,
+        read: false,
+        createdAt: new Date().toISOString(),
+        relatedType: 'exhibition',
+        relatedId: report.id,
+        priority: 'medium',
+      };
+      messages.push(msg);
+      broadcastMessage(msg);
+    });
+  }
 
   res.json({
     success: true,
     data: {
-      month: `${year}年${month + 1}月`,
-      revenue: {
-        total: totalRevenue,
-        ticketCount: totalTickets,
-        avgPrice: avgTicketPrice,
-        changePercent: revenueChange,
-      },
-      visitors: {
-        total: totalVisitors,
-        changePercent: visitorChange,
-      },
-      exhibitions: exhibitionStats,
-      topExhibits,
-      conservation: conservationStats,
-      security: securityStats,
-      satisfaction: satisfactionAvg,
+      id: report.id,
+      month: report.month,
+      generatedAt: report.generatedAt,
+      pushedToPhone: report.pushedToPhone,
+      pushedAt: report.pushedAt,
+      autoGenerated: autoGenerate,
+      ...report.data,
+    },
+  });
+});
+
+router.post('/monthly-report/generate', async (_req: Request, res: Response): Promise<void> => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+
+  const report = getOrCreateMonthlyReport(year, month, true);
+
+  const directors = users.filter((u) => u.role === 'director');
+  directors.forEach((director) => {
+    const msg: Message = {
+      id: 'msg-' + Date.now() + Math.random().toString(36).slice(2, 6),
+      type: 'notification',
+      title: `${report.month}月度运营报告已手动生成`,
+      content: `${report.month}博物馆运营报告已成功生成，请前往查看详情。`,
+      senderId: 'system',
+      senderName: '数据分析系统',
+      receiverId: director.id,
+      receiverName: director.name,
+      read: false,
+      createdAt: new Date().toISOString(),
+      relatedType: 'exhibition',
+      relatedId: report.id,
+      priority: 'medium',
+    };
+    messages.push(msg);
+    broadcastMessage(msg);
+  });
+
+  res.json({
+    success: true,
+    data: {
+      id: report.id,
+      month: report.month,
+      generatedAt: report.generatedAt,
+      pushedToPhone: report.pushedToPhone,
+      pushedAt: report.pushedAt,
+      ...report.data,
+    },
+  });
+});
+
+router.post('/monthly-report/push-to-phone', async (_req: Request, res: Response): Promise<void> => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+
+  const report = monthlyReports.find((r) => r.year === year && r.monthIndex === month);
+
+  if (!report) {
+    res.status(404).json({
+      success: false,
+      error: '本月报告尚未生成，请先生成月度报告',
+    });
+    return;
+  }
+
+  report.pushedToPhone = true;
+  report.pushedAt = new Date().toISOString();
+
+  const directors = users.filter((u) => u.role === 'director');
+  directors.forEach((director) => {
+    const msg: Message = {
+      id: 'msg-' + Date.now() + Math.random().toString(36).slice(2, 6),
+      type: 'notification',
+      title: `${report.month}月度报告已推送到手机`,
+      content: `${report.month}运营报告（总收入 ¥${report.data.revenue.total.toLocaleString()}）已推送到您的手机端。`,
+      senderId: 'system',
+      senderName: '推送服务',
+      receiverId: director.id,
+      receiverName: director.name,
+      read: false,
+      createdAt: new Date().toISOString(),
+      relatedType: 'exhibition',
+      relatedId: report.id,
+      priority: 'high',
+    };
+    messages.push(msg);
+    broadcastMessage(msg);
+  });
+
+  setTimeout(() => {}, 800);
+
+  res.json({
+    success: true,
+    data: {
+      pushed: true,
+      pushedAt: report.pushedAt,
+      message: '已模拟推送到手机端',
     },
   });
 });

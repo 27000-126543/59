@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Building2, Users, AlertTriangle, CheckCircle, ChevronRight, Clock } from 'lucide-react';
+import { Building2, Users, AlertTriangle, CheckCircle, ChevronRight, Clock, X } from 'lucide-react';
 import DataCard from '@/components/Common/DataCard';
 import Badge from '@/components/Common/Badge';
+import Modal from '@/components/Common/Modal';
 import { get } from '@/utils/request';
 import { cn } from '@/lib/utils';
 
@@ -12,7 +13,7 @@ interface HallFlow {
   currentCount: number;
   maxCapacity: number;
   occupancyRate: number;
-  densityLevel: 'normal' | 'warning' | 'critical';
+  densityLevel: 'low' | 'medium' | 'high' | 'critical';
 }
 
 interface AlertItem {
@@ -26,11 +27,25 @@ interface AlertItem {
   createdAt: string;
 }
 
+interface RealtimeAlert {
+  hallId: string;
+  hallName: string;
+  level: 'warning' | 'critical';
+  message: string;
+  occupancyRate: number;
+}
+
 interface FlowData {
+  timestamp: string;
   totalCurrent: number;
   totalMax: number;
   overallOccupancy: number;
+  overallDensityLevel: 'low' | 'medium' | 'high' | 'critical';
   halls: HallFlow[];
+  alerts: RealtimeAlert[];
+  hasCritical: boolean;
+  criticalCount: number;
+  warningCount: number;
 }
 
 interface AlertsResponse {
@@ -38,6 +53,12 @@ interface AlertsResponse {
   unresolved: number;
   list: AlertItem[];
 }
+
+const mapDensityLevel = (level: HallFlow['densityLevel']): 'normal' | 'warning' | 'critical' => {
+  if (level === 'critical') return 'critical';
+  if (level === 'high') return 'warning';
+  return 'normal';
+};
 
 const densityColorMap = {
   normal: {
@@ -75,24 +96,64 @@ export default function SecurityHome() {
   const [flowData, setFlowData] = useState<FlowData | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [alertModalOpen, setAlertModalOpen] = useState(false);
+  const [currentAlerts, setCurrentAlerts] = useState<RealtimeAlert[]>([]);
+  const [lastUpdate, setLastUpdate] = useState<string>('');
+  const alertedIdsRef = useRef<Set<string>>(new Set());
+
+  const fetchRealtimeFlow = async () => {
+    try {
+      const data = await get<FlowData>('/security/flow/real-time');
+      setFlowData(data);
+      setLastUpdate(new Date(data.timestamp).toLocaleTimeString('zh-CN'));
+
+      const newCriticalAlerts = data.alerts.filter(
+        (a) => a.level === 'critical' && !alertedIdsRef.current.has(`${a.hallId}-${data.timestamp.slice(0, 16)}`)
+      );
+
+      if (newCriticalAlerts.length > 0) {
+        newCriticalAlerts.forEach((a) => {
+          alertedIdsRef.current.add(`${a.hallId}-${data.timestamp.slice(0, 16)}`);
+        });
+        setCurrentAlerts((prev) => {
+          const existingIds = new Set(prev.map((a) => a.hallId));
+          const merged = [...prev];
+          newCriticalAlerts.forEach((a) => {
+            if (!existingIds.has(a.hallId)) {
+              merged.push(a);
+            }
+          });
+          return merged;
+        });
+        setAlertModalOpen(true);
+      }
+
+      const alertsRes = await get<AlertsResponse>('/security/alerts');
+      setAlertsData(alertsRes);
+    } catch (error) {
+      console.error('获取实时人流数据失败:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [flow, alerts] = await Promise.all([
-          get<FlowData>('/security/flow'),
-          get<AlertsResponse>('/security/alerts'),
-        ]);
-        setFlowData(flow);
-        setAlertsData(alerts);
-      } catch (error) {
-        console.error('获取数据失败:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchData();
+    fetchRealtimeFlow();
+    const interval = setInterval(fetchRealtimeFlow, 5000);
+    return () => clearInterval(interval);
   }, []);
+
+  const handleDismissAlert = (hallId: string) => {
+    setCurrentAlerts((prev) => prev.filter((a) => a.hallId !== hallId));
+    if (currentAlerts.length <= 1) {
+      setAlertModalOpen(false);
+    }
+  };
+
+  const handleDismissAll = () => {
+    setCurrentAlerts([]);
+    setAlertModalOpen(false);
+  };
 
   const unresolvedCount = alertsData?.unresolved ?? 0;
   const resolvedCount = (alertsData?.total ?? 0) - unresolvedCount;
@@ -115,6 +176,12 @@ export default function SecurityHome() {
           </h1>
           <p className="mt-1 text-sm text-museum-brown-500">
             实时监控各展厅人流密度与安全预警
+            {lastUpdate && (
+              <span className="ml-2 text-museum-jade">
+                <Clock className="inline h-3.5 w-3.5 mr-1" />
+                最近更新：{lastUpdate}
+              </span>
+            )}
           </p>
         </div>
       </div>
@@ -165,13 +232,15 @@ export default function SecurityHome() {
         </div>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
           {flowData?.halls.map((hall) => {
-            const colors = densityColorMap[hall.densityLevel];
+            const mappedLevel = mapDensityLevel(hall.densityLevel);
+            const colors = densityColorMap[mappedLevel];
             return (
               <div
                 key={hall.id}
                 className={cn(
                   'rounded-xl border p-5 shadow-museum transition-all hover:shadow-museum-hover',
-                  colors.bg
+                  colors.bg,
+                  hall.densityLevel === 'critical' && 'animate-pulse'
                 )}
               >
                 <div className="flex items-start justify-between">
@@ -179,7 +248,7 @@ export default function SecurityHome() {
                     <h3 className="font-semibold text-museum-brown-800">
                       {hall.name}
                     </h3>
-                    <Badge variant={hall.densityLevel === 'critical' ? 'danger' : hall.densityLevel === 'warning' ? 'warning' : 'success'}>
+                    <Badge variant={mappedLevel === 'critical' ? 'danger' : mappedLevel === 'warning' ? 'warning' : 'success'}>
                       {colors.label}
                     </Badge>
                   </div>
@@ -195,7 +264,7 @@ export default function SecurityHome() {
                   </div>
                   <div className="h-2 w-full overflow-hidden rounded-full bg-white/60">
                     <div
-                      className={cn('h-full rounded-full transition-all', colors.bar)}
+                      className={cn('h-full rounded-full transition-all duration-500', colors.bar)}
                       style={{ width: `${Math.min(hall.occupancyRate, 100)}%` }}
                     />
                   </div>
@@ -234,7 +303,7 @@ export default function SecurityHome() {
                     className={cn(
                       'flex h-10 w-10 items-center justify-center rounded-lg',
                       alert.level === 'critical'
-                        ? 'bg-red-100 text-museum-crimson animate-pulse-red'
+                        ? 'bg-red-100 text-museum-crimson animate-pulse'
                         : 'bg-amber-100 text-amber-700'
                     )}
                   >
@@ -270,6 +339,89 @@ export default function SecurityHome() {
           )}
         </div>
       </div>
+
+      <Modal
+        open={alertModalOpen}
+        onClose={handleDismissAll}
+        title="人流预警"
+        size="lg"
+        footer={
+          <div className="flex items-center justify-between w-full">
+            <div className="text-sm text-museum-brown-500">
+              共 {currentAlerts.length} 条预警
+            </div>
+            <button
+              onClick={handleDismissAll}
+              className="btn-gold px-5 py-2 text-sm"
+            >
+              全部已知晓
+            </button>
+          </div>
+        }
+      >
+        <div className="space-y-3">
+          {currentAlerts.map((alert) => (
+            <div
+              key={alert.hallId}
+              className={cn(
+                'flex items-start gap-3 rounded-lg border p-4',
+                alert.level === 'critical'
+                  ? 'border-red-200 bg-red-50'
+                  : 'border-amber-200 bg-amber-50'
+              )}
+            >
+              <div
+                className={cn(
+                  'flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg',
+                  alert.level === 'critical'
+                    ? 'bg-red-100 text-museum-crimson animate-pulse'
+                    : 'bg-amber-100 text-amber-700'
+                )}
+              >
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <p className="font-semibold text-museum-brown-800">
+                      {alert.hallName}
+                    </p>
+                    <Badge variant={alert.level === 'critical' ? 'danger' : 'warning'}>
+                      {alert.level === 'critical' ? '严重预警' : '人流预警'}
+                    </Badge>
+                    <span className="text-sm font-bold text-museum-brown-700">
+                      拥挤度 {alert.occupancyRate}%
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => handleDismissAlert(alert.hallId)}
+                    className="rounded-lg p-1.5 text-museum-brown-400 hover:bg-white/60 hover:text-museum-brown-600 transition-colors"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <p className="mt-1 text-sm text-museum-brown-600">
+                  {alert.message}
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    onClick={() => navigate('/security/capacity')}
+                    className="text-xs text-museum-gold-600 hover:text-museum-gold-700 font-medium"
+                  >
+                    设置限流 →
+                  </button>
+                  <button
+                    onClick={() => navigate('/security/alerts')}
+                    className="text-xs text-museum-brown-500 hover:text-museum-brown-700"
+                  >
+                    查看详情 →
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Modal>
     </div>
   );
 }

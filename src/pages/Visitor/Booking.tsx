@@ -18,17 +18,31 @@ import {
   Heart,
   ToggleLeft,
   ToggleRight,
+  ThumbsUp,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/authStore';
-import { post } from '@/utils/request';
+import { get, post } from '@/utils/request';
 
-interface TimeSlot {
-  id: string;
-  start: string;
-  end: string;
-  remaining: number;
-  capacity: number;
+interface PricingTimeSlot {
+  timeSlot: string;
+  basePrice: number;
+  finalPrice: number;
+  historicalAvgFlow: number;
+  remainingCapacity: number;
+  isWeekend: boolean;
+  hasSpecialExhibition: boolean;
+  heatScore: number;
+  recommended: boolean;
+  recommendationNote: string;
   heatLevel: 'low' | 'medium' | 'high' | 'full';
+}
+
+interface PricingData {
+  date: string;
+  isWeekend: boolean;
+  hasSpecialExhibition: boolean;
+  specialExhibitions: Array<{ id: string; title: string; subtitle: string }>;
+  timeSlots: PricingTimeSlot[];
 }
 
 interface InterestTag {
@@ -38,7 +52,7 @@ interface InterestTag {
 
 const interestTags: InterestTag[] = [
   { key: 'bronze', label: '青铜器' },
-  { key: 'calligraphy', label: '书画' },
+  { key: 'painting', label: '书画' },
   { key: 'ceramic', label: '陶瓷' },
   { key: 'jade', label: '玉器' },
 ];
@@ -50,16 +64,7 @@ const durations = [
   { key: 'half', label: '半天' },
 ];
 
-const timeSlots: TimeSlot[] = [
-  { id: '1', start: '09:00', end: '10:30', remaining: 156, capacity: 200, heatLevel: 'low' },
-  { id: '2', start: '10:30', end: '12:00', remaining: 89, capacity: 200, heatLevel: 'medium' },
-  { id: '3', start: '12:00', end: '13:30', remaining: 178, capacity: 200, heatLevel: 'low' },
-  { id: '4', start: '13:30', end: '15:00', remaining: 45, capacity: 200, heatLevel: 'high' },
-  { id: '5', start: '15:00', end: '16:30', remaining: 12, capacity: 200, heatLevel: 'high' },
-  { id: '6', start: '16:30', end: '18:00', remaining: 0, capacity: 200, heatLevel: 'full' },
-];
-
-const getHeatColor = (level: TimeSlot['heatLevel']) => {
+const getHeatColor = (level: PricingTimeSlot['heatLevel']) => {
   switch (level) {
     case 'low':
       return 'bg-emerald-500';
@@ -72,7 +77,7 @@ const getHeatColor = (level: TimeSlot['heatLevel']) => {
   }
 };
 
-const getHeatLabel = (level: TimeSlot['heatLevel']) => {
+const getHeatLabel = (level: PricingTimeSlot['heatLevel']) => {
   switch (level) {
     case 'low':
       return '舒适';
@@ -99,12 +104,34 @@ export default function Booking() {
   const [avoidCrowd, setAvoidCrowd] = useState(true);
   const [visitorCount, setVisitorCount] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [pricingLoading, setPricingLoading] = useState(false);
+  const [pricingData, setPricingData] = useState<PricingData | null>(null);
 
   useEffect(() => {
     setMounted(true);
     const today = new Date();
     setSelectedDate(today);
   }, []);
+
+  useEffect(() => {
+    if (selectedDate) {
+      const dateStr = selectedDate.toISOString().split('T')[0];
+      fetchPricing(dateStr);
+    }
+  }, [selectedDate]);
+
+  const fetchPricing = async (dateStr: string) => {
+    setPricingLoading(true);
+    try {
+      const data = await get<PricingData>(`/tickets/pricing?date=${dateStr}`);
+      setPricingData(data);
+      setSelectedSlot(null);
+    } catch (error) {
+      console.error('获取定价数据失败:', error);
+    } finally {
+      setPricingLoading(false);
+    }
+  };
 
   const toggleTag = (key: string) => {
     setSelectedTags((prev) =>
@@ -124,10 +151,12 @@ export default function Booking() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const basePrice = 80;
-  const discount = selectedTags.length > 0 ? 0.85 : selectedDate && selectedDate.getDay() === 0 ? 0.9 : 1;
-  const dynamicPrice = Math.round(basePrice * discount);
-  const totalPrice = dynamicPrice * visitorCount;
+  const selectedPricing = pricingData?.timeSlots.find((s) => s.timeSlot === selectedSlot);
+  const basePrice = selectedPricing?.basePrice ?? 80;
+  const dynamicPrice = selectedPricing?.finalPrice ?? basePrice;
+  const tagDiscount = selectedTags.length > 0 ? 0.9 : 1;
+  const finalPricePerPerson = Math.round(dynamicPrice * tagDiscount);
+  const totalPrice = finalPricePerPerson * visitorCount;
 
   const isDateSelectable = (day: number) => {
     const checkDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
@@ -151,29 +180,21 @@ export default function Booking() {
     );
   };
 
-  const getRemainingSpots = (_day: number) => {
-    return Math.floor(Math.random() * 300) + 50;
-  };
-
   const handleSubmit = async () => {
     if (!selectedDate || !selectedSlot) return;
 
     setLoading(true);
     try {
-      const slot = timeSlots.find((s) => s.id === selectedSlot);
-      const result = await post<{ ticketId: string }>('/tickets/book', {
-        userId: user?.id,
-        date: selectedDate.toISOString().split('T')[0],
-        timeSlotId: selectedSlot,
-        startTime: slot?.start,
-        endTime: slot?.end,
-        visitorCount,
-        interests: selectedTags,
-        duration: selectedDuration,
-        avoidCrowd,
-        totalPrice,
+      const [start, end] = selectedSlot.split('-');
+      const result = await post<{ ticket: { id: string } }>('/tickets/book', {
+        visitorName: user?.name || user?.realName || user?.username || '游客',
+        visitorPhone: user?.phone || '13800138000',
+        visitDate: selectedDate.toISOString().split('T')[0],
+        timeSlot: selectedSlot,
+        price: totalPrice,
+        ticketType: 'adult',
       });
-      navigate(`/visitor/ticket/${result?.ticketId || 'demo-ticket-001'}`);
+      navigate(`/visitor/ticket/${result?.ticket?.id || 'demo-ticket-001'}`);
     } catch (err) {
       console.error(err);
       navigate('/visitor/ticket/demo-ticket-001');
@@ -193,6 +214,22 @@ export default function Booking() {
           <h1 className="font-serif text-2xl font-bold text-museum-brown-900">门票预约</h1>
           <p className="mt-1 text-sm text-museum-brown-500">智能动态定价，为您提供最优参观体验</p>
         </div>
+
+        {pricingData?.hasSpecialExhibition && pricingData.specialExhibitions.length > 0 && (
+          <div className="mb-6 rounded-xl border border-museum-gold-300 bg-gradient-to-r from-museum-gold-50 to-museum-cream p-4">
+            <div className="flex items-start gap-3">
+              <Sparkles className="mt-0.5 h-5 w-5 flex-shrink-0 text-museum-gold-600" />
+              <div>
+                <p className="font-medium text-museum-brown-800">当前有特展进行中</p>
+                {pricingData.specialExhibitions.map((ex) => (
+                  <p key={ex.id} className="mt-1 text-sm text-museum-brown-600">
+                    {ex.title} - {ex.subtitle}
+                  </p>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           <div
@@ -241,7 +278,8 @@ export default function Booking() {
                   const selectable = isDateSelectable(day);
                   const selected = isDateSelected(day);
                   const todays = isToday(day);
-                  const remaining = getRemainingSpots(day);
+                  const isWeekendDay = (firstDay + i) % 7 === 0 || (firstDay + i) % 7 === 6;
+                  const remaining = Math.floor(Math.random() * 300) + 50;
                   const nearlyFull = remaining < 50;
 
                   return (
@@ -256,7 +294,7 @@ export default function Booking() {
                         selected
                           ? 'bg-gradient-to-br from-museum-gold-400 to-museum-gold-600 text-museum-brown-900 font-bold shadow-gold'
                           : selectable
-                          ? 'hover:bg-museum-brown-100 text-museum-brown-700'
+                          ? `hover:bg-museum-brown-100 ${isWeekendDay ? 'text-museum-crimson' : 'text-museum-brown-700'}`
                           : 'text-museum-brown-300 cursor-not-allowed'
                       }`}
                     >
@@ -284,6 +322,11 @@ export default function Booking() {
                     ? `已选择：${selectedDate.getFullYear()}年${selectedDate.getMonth() + 1}月${selectedDate.getDate()}日`
                     : '请选择参观日期'}
                 </p>
+                {pricingData?.isWeekend && (
+                  <p className="mt-1 text-xs text-museum-crimson">
+                    周末票价上浮15%
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -297,65 +340,102 @@ export default function Booking() {
               <h3 className="mb-4 flex items-center gap-2 font-serif text-lg font-semibold text-museum-brown-900">
                 <Clock className="h-5 w-5 text-museum-gold-600" />
                 选择时段
+                {pricingLoading && (
+                  <span className="ml-2 text-xs font-normal text-museum-brown-400">加载中...</span>
+                )}
               </h3>
 
-              <div className="grid grid-cols-2 gap-4">
-                {timeSlots.map((slot) => {
-                  const isSelected = selectedSlot === slot.id;
-                  const isFull = slot.heatLevel === 'full';
+              {pricingData?.timeSlots ? (
+                <div className="grid grid-cols-1 gap-4">
+                  {pricingData.timeSlots.map((slot) => {
+                    const isSelected = selectedSlot === slot.timeSlot;
+                    const isFull = slot.heatLevel === 'full';
 
-                  return (
-                    <button
-                      key={slot.id}
-                      disabled={isFull}
-                      onClick={() => !isFull && setSelectedSlot(slot.id)}
-                      className={`relative overflow-hidden rounded-xl border-2 p-4 text-left transition-all ${
-                        isSelected
-                          ? 'border-museum-gold-500 bg-gradient-to-br from-museum-gold-50 to-museum-gold-100 shadow-gold'
-                          : isFull
-                          ? 'border-museum-brown-200 bg-museum-brown-50 opacity-60 cursor-not-allowed'
-                          : 'border-museum-brown-200 bg-white hover:border-museum-gold-400 hover:shadow-museum'
-                      }`}
-                    >
-                      {isSelected && (
-                        <div className="absolute top-2 right-2 flex h-6 w-6 items-center justify-center rounded-full bg-museum-gold-500">
-                          <Check className="h-4 w-4 text-white" />
-                        </div>
-                      )}
+                    return (
+                      <button
+                        key={slot.timeSlot}
+                        disabled={isFull}
+                        onClick={() => !isFull && setSelectedSlot(slot.timeSlot)}
+                        className={`relative overflow-hidden rounded-xl border-2 p-4 text-left transition-all ${
+                          isSelected
+                            ? 'border-museum-gold-500 bg-gradient-to-br from-museum-gold-50 to-museum-gold-100 shadow-gold'
+                            : isFull
+                            ? 'border-museum-brown-200 bg-museum-brown-50 opacity-60 cursor-not-allowed'
+                            : slot.recommended
+                            ? 'border-emerald-300 bg-emerald-50/30 hover:border-museum-gold-400 hover:shadow-museum'
+                            : 'border-museum-brown-200 bg-white hover:border-museum-gold-400 hover:shadow-museum'
+                        }`}
+                      >
+                        {isSelected && (
+                          <div className="absolute top-2 right-2 flex h-6 w-6 items-center justify-center rounded-full bg-museum-gold-500">
+                            <Check className="h-4 w-4 text-white" />
+                          </div>
+                        )}
 
-                      <div className="mb-2 flex items-center gap-2">
-                        <span
-                          className={`font-semibold ${
-                            isSelected ? 'text-museum-brown-900' : 'text-museum-brown-800'
-                          }`}
-                        >
-                          {slot.start} - {slot.end}
-                        </span>
-                        <span
-                          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-white ${getHeatColor(
-                            slot.heatLevel
-                          )}`}
-                        >
-                          {getHeatLabel(slot.heatLevel)}
-                        </span>
-                      </div>
+                        {slot.recommended && (
+                          <div className="absolute top-2 left-2 flex items-center gap-1 rounded-full bg-emerald-500 px-2 py-0.5 text-xs font-medium text-white">
+                            <ThumbsUp className="h-3 w-3" />
+                            推荐
+                          </div>
+                        )}
 
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-1 text-sm text-museum-brown-500">
-                          <Users className="h-4 w-4" />
-                          <span>剩余 {slot.remaining} 名</span>
+                        <div className="mb-2 flex items-center gap-2 flex-wrap">
+                          <span
+                            className={`font-semibold ${
+                              isSelected ? 'text-museum-brown-900' : 'text-museum-brown-800'
+                            }`}
+                          >
+                            {slot.timeSlot}
+                          </span>
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-white ${getHeatColor(
+                              slot.heatLevel
+                            )}`}
+                          >
+                            {getHeatLabel(slot.heatLevel)}
+                          </span>
+                          <span className="text-sm gold-text font-semibold">
+                            ¥{slot.finalPrice}
+                          </span>
+                          {slot.finalPrice !== slot.basePrice && (
+                            <span className="text-xs text-museum-brown-400 line-through">
+                              ¥{slot.basePrice}
+                            </span>
+                          )}
                         </div>
-                        <div className="w-20 h-2 rounded-full bg-museum-brown-100 overflow-hidden">
-                          <div
-                            className={`h-full ${getHeatColor(slot.heatLevel)}`}
-                            style={{ width: `${((slot.capacity - slot.remaining) / slot.capacity) * 100}%` }}
-                          />
+
+                        {slot.recommendationNote && (
+                          <p
+                            className={`mb-2 text-xs ${
+                              slot.recommended ? 'text-emerald-600' : 'text-amber-600'
+                            }`}
+                          >
+                            {slot.recommended && <ThumbsUp className="mr-1 inline h-3 w-3" />}
+                            {slot.recommendationNote}
+                          </p>
+                        )}
+
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1 text-sm text-museum-brown-500">
+                            <Users className="h-4 w-4" />
+                            <span>历史客流约 {slot.historicalAvgFlow} 人</span>
+                          </div>
+                          <div className="w-24 h-2 rounded-full bg-museum-brown-100 overflow-hidden">
+                            <div
+                              className={`h-full ${getHeatColor(slot.heatLevel)}`}
+                              style={{ width: `${Math.min(100, (slot.historicalAvgFlow / 300) * 100)}%` }}
+                            />
+                          </div>
                         </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="py-12 text-center text-museum-brown-400">
+                  {pricingLoading ? '加载时段数据...' : '请选择日期查看可用时段'}
+                </div>
+              )}
             </div>
           </div>
 
@@ -372,28 +452,40 @@ export default function Booking() {
                 </div>
 
                 <div className="mb-4 flex items-end gap-3">
-                  {discount < 1 && (
+                  {tagDiscount < 1 && (
                     <span className="mb-1 inline-flex items-center gap-1 rounded-full bg-museum-crimson px-2.5 py-1 text-xs font-medium text-white">
                       <TrendingDown className="h-3 w-3" />
-                      {Math.round((1 - discount) * 100)}% OFF
+                      {Math.round((1 - tagDiscount) * 100)}% OFF
                     </span>
                   )}
-                  {discount < 1 && (
-                    <span className="text-lg text-museum-brown-400 line-through">¥{basePrice}</span>
+                  {selectedPricing && selectedPricing.finalPrice !== selectedPricing.basePrice && (
+                    <span className="text-lg text-museum-brown-400 line-through">¥{selectedPricing.basePrice}</span>
                   )}
-                  <span className="text-4xl font-bold gold-text">¥{dynamicPrice}</span>
+                  <span className="text-4xl font-bold gold-text">¥{finalPricePerPerson}</span>
                   <span className="mb-1 text-sm text-museum-brown-500">/人</span>
                 </div>
 
                 <div className="space-y-2 rounded-lg bg-white/60 p-3">
                   <p className="flex items-start gap-2 text-xs text-museum-brown-600">
                     <Info className="h-3.5 w-3.5 mt-0.5 flex-shrink-0 text-museum-gold-600" />
-                    <span>价格受历史客流、展品热度、特殊展览等因素动态调整</span>
+                    <span>价格受历史客流、展品热度、周末/特展等因素动态调整</span>
                   </p>
                   {selectedTags.length > 0 && (
                     <p className="flex items-start gap-2 text-xs text-museum-jade">
                       <Sparkles className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
                       <span>设置偏好标签享额外折扣</span>
+                    </p>
+                  )}
+                  {pricingData?.isWeekend && (
+                    <p className="flex items-start gap-2 text-xs text-amber-600">
+                      <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+                      <span>周末票价上浮15%</span>
+                    </p>
+                  )}
+                  {pricingData?.hasSpecialExhibition && (
+                    <p className="flex items-start gap-2 text-xs text-amber-600">
+                      <Sparkles className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+                      <span>特展期间票价上浮20%</span>
                     </p>
                   )}
                 </div>
@@ -402,7 +494,7 @@ export default function Booking() {
               <div className="mb-5">
                 <h4 className="mb-3 flex items-center gap-2 text-sm font-medium text-museum-brown-800">
                   <Heart className="h-4 w-4 text-museum-gold-600" />
-                  兴趣偏好
+                  兴趣偏好（选填享9折）
                 </h4>
                 <div className="flex flex-wrap gap-2">
                   {interestTags.map((tag) => {

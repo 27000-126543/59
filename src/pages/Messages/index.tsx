@@ -203,16 +203,41 @@ function generateMockMessages(): Message[] {
 export default function Messages() {
   const navigate = useNavigate();
   const { user } = useAuthStore();
-  const { markRead, markAllRead, messages: storeMessages, fetchMessages } = useMessageStore();
+  const {
+    markRead,
+    markAllRead,
+    messages: storeMessages,
+    fetchMessages,
+    initWebSocketListeners,
+    cleanupWebSocketListeners,
+  } = useMessageStore();
   const [category, setCategory] = useState<MessageCategory>('all');
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Message[]>(generateMockMessages());
 
   useEffect(() => {
     if (user) {
       fetchMessages();
+      initWebSocketListeners();
     }
-  }, [user, fetchMessages]);
+    return () => {
+      cleanupWebSocketListeners();
+    };
+  }, [user, fetchMessages, initWebSocketListeners, cleanupWebSocketListeners]);
+
+  const messages: Message[] =
+    storeMessages.length > 0
+      ? storeMessages.map((m) => ({
+          id: m.id,
+          type: (typeToCategory[m.type] || typeToCategory[m.relatedType || ''] || 'system') as MessageCategory,
+          title: m.title,
+          content: m.content,
+          senderName: m.senderName,
+          read: m.read,
+          createdAt: m.createdAt,
+          relatedType: m.relatedType,
+          relatedId: m.relatedId,
+        }))
+      : generateMockMessages();
 
   const unreadByCategory = categoryOptions.reduce(
     (acc, cat) => {
@@ -234,9 +259,6 @@ export default function Messages() {
   const handleExpand = async (message: Message) => {
     if (!message.read) {
       await markRead(message.id);
-      setMessages((prev) =>
-        prev.map((m) => (m.id === message.id ? { ...m, read: true } : m))
-      );
     }
     setExpandedId(expandedId === message.id ? null : message.id);
   };
@@ -245,7 +267,6 @@ export default function Messages() {
     if (user) {
       await markAllRead();
     }
-    setMessages((prev) => prev.map((m) => ({ ...m, read: true })));
   };
 
   const handleViewDetail = (message: Message) => {

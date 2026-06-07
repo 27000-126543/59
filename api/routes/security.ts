@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express';
-import { halls, alerts, type Alert } from '../data/mockData.js';
+import { halls, alerts, users, type Alert } from '../data/mockData.js';
+import { broadcastSecurityAlert } from '../websocket.js';
 
 const router = Router();
 
@@ -34,6 +35,94 @@ router.get('/flow', async (_req: Request, res: Response): Promise<void> => {
       overallOccupancy: Math.round(overallPercentage * 100),
       overallDensityLevel: getDensityLevel(overallPercentage),
       halls: flowData,
+    },
+  });
+});
+
+router.get('/flow/real-time', async (_req: Request, res: Response): Promise<void> => {
+  halls.forEach((hall) => {
+    const fluctuation = Math.floor(Math.random() * 21) - 10;
+    hall.currentCount = Math.max(0, Math.min(hall.maxCapacity, hall.currentCount + fluctuation));
+  });
+
+  const flowData = halls.map((hall) => {
+    const percentage = hall.currentCount / hall.maxCapacity;
+    return {
+      ...hall,
+      occupancyRate: Math.round(percentage * 100),
+      densityLevel: getDensityLevel(percentage),
+    };
+  });
+
+  const totalCurrent = halls.reduce((sum, h) => sum + h.currentCount, 0);
+  const totalMax = halls.reduce((sum, h) => sum + h.maxCapacity, 0);
+  const overallPercentage = totalCurrent / totalMax;
+
+  const criticalHalls = flowData.filter(
+    (h) => h.densityLevel === 'critical' || h.occupancyRate >= 90
+  );
+  const warningHalls = flowData.filter(
+    (h) => h.densityLevel === 'high' || (h.occupancyRate >= 75 && h.occupancyRate < 90)
+  );
+
+  const alertsToPush: Array<{
+    hallId: string;
+    hallName: string;
+    level: 'warning' | 'critical';
+    message: string;
+    occupancyRate: number;
+  }> = [];
+
+  criticalHalls.forEach((hall) => {
+    const existingAlert = alerts.find(
+      (a) => a.hallId === hall.id && !a.resolved && a.level === 'critical'
+    );
+    if (!existingAlert) {
+      const newAlert: Alert = {
+        id: 'a' + Date.now() + Math.random().toString(36).slice(2, 6),
+        hallId: hall.id,
+        type: 'overcrowding',
+        level: 'critical',
+        message: `${hall.name} 人流密度已达 ${hall.occupancyRate}%，超过安全阈值，请立即启动限流措施！`,
+        resolved: false,
+        createdAt: new Date().toISOString(),
+        resolvedAt: null,
+      };
+      alerts.push(newAlert);
+      broadcastSecurityAlert(hall.name, 'critical', newAlert.message);
+    }
+    alertsToPush.push({
+      hallId: hall.id,
+      hallName: hall.name,
+      level: 'critical',
+      message: `${hall.name} 人流密度已达 ${hall.occupancyRate}%，超过安全阈值！`,
+      occupancyRate: hall.occupancyRate,
+    });
+  });
+
+  warningHalls.forEach((hall) => {
+    alertsToPush.push({
+      hallId: hall.id,
+      hallName: hall.name,
+      level: 'warning',
+      message: `${hall.name} 人流密度较高（${hall.occupancyRate}%），请关注。`,
+      occupancyRate: hall.occupancyRate,
+    });
+  });
+
+  res.json({
+    success: true,
+    data: {
+      timestamp: new Date().toISOString(),
+      totalCurrent,
+      totalMax,
+      overallOccupancy: Math.round(overallPercentage * 100),
+      overallDensityLevel: getDensityLevel(overallPercentage),
+      halls: flowData,
+      alerts: alertsToPush,
+      hasCritical: criticalHalls.length > 0,
+      criticalCount: criticalHalls.length,
+      warningCount: warningHalls.length,
     },
   });
 });

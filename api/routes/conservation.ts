@@ -8,6 +8,7 @@ import {
   users,
 } from '../data/mockData.js';
 import type { WorkOrder, Message, Inspection } from '../../shared/types.js';
+import { broadcastMessage } from '../websocket.js';
 
 const router = Router();
 
@@ -221,6 +222,7 @@ router.post('/workorders', async (req: Request, res: Response): Promise<void> =>
       priority: 'high',
     };
     messages.push(newMessage);
+    broadcastMessage(newMessage);
   });
 
   res.json({
@@ -270,6 +272,7 @@ router.put('/workorders/:id/approve', async (req: Request, res: Response): Promi
       priority: 'medium',
     };
     messages.push(newMessage);
+    broadcastMessage(newMessage);
   }
 
   res.json({
@@ -333,6 +336,7 @@ router.put('/workorders/:id/reject', async (req: Request, res: Response): Promis
       priority: 'high',
     };
     messages.push(newMessage);
+    broadcastMessage(newMessage);
   }
 
   res.json({

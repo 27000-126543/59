@@ -84,6 +84,7 @@ export interface Exhibition {
   exhibitIds: string[];
   visitorCount: number;
   targetVisitorCount: number;
+  isSpecial?: boolean;
   createdAt: string;
 }
 

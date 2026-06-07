@@ -319,6 +319,7 @@ export const exhibitions: Exhibition[] = [
     exhibitIds: ['exhibit-001', 'exhibit-002', 'exhibit-005', 'exhibit-009', 'exhibit-012', 'exhibit-013', 'exhibit-015'],
     visitorCount: 125680,
     targetVisitorCount: 200000,
+    isSpecial: true,
     createdAt: '2026-03-15T10:00:00Z',
   },
   {
@@ -335,6 +336,7 @@ export const exhibitions: Exhibition[] = [
     exhibitIds: ['exhibit-003', 'exhibit-004', 'exhibit-006', 'exhibit-010', 'exhibit-014'],
     visitorCount: 89320,
     targetVisitorCount: 150000,
+    isSpecial: false,
     createdAt: '2026-02-20T09:30:00Z',
   },
   {
@@ -351,6 +353,7 @@ export const exhibitions: Exhibition[] = [
     exhibitIds: ['exhibit-007', 'exhibit-008', 'exhibit-011'],
     visitorCount: 156890,
     targetVisitorCount: 120000,
+    isSpecial: true,
     createdAt: '2025-11-10T14:00:00Z',
   },
   {
@@ -367,6 +370,7 @@ export const exhibitions: Exhibition[] = [
     exhibitIds: [],
     visitorCount: 0,
     targetVisitorCount: 180000,
+    isSpecial: true,
     createdAt: '2026-05-01T11:00:00Z',
   },
 ];
