@@ -1,0 +1,96 @@
+import { create } from 'zustand';
+import type { User, UserRole, LoginResponse } from '@/types';
+import { post } from '@/utils/request';
+
+const STORAGE_KEY = 'auth';
+
+interface AuthState {
+  user: User | null;
+  token: string | null;
+  isAuthenticated: boolean;
+  initialized: boolean;
+  login: (role: UserRole, username: string, password: string) => Promise<void>;
+  logout: () => void;
+  initialize: () => void;
+}
+
+interface StoredAuth {
+  user: User;
+  token: string;
+}
+
+function getInitialState(): Pick<AuthState, 'user' | 'token' | 'isAuthenticated'> {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      const parsed: StoredAuth = JSON.parse(stored);
+      if (parsed.user && parsed.token) {
+        return {
+          user: parsed.user,
+          token: parsed.token,
+          isAuthenticated: true,
+        };
+      }
+    }
+  } catch {
+    localStorage.removeItem(STORAGE_KEY);
+  }
+  return {
+    user: null,
+    token: null,
+    isAuthenticated: false,
+  };
+}
+
+const initial = getInitialState();
+
+export const useAuthStore = create<AuthState>((set) => ({
+  ...initial,
+  initialized: true,
+
+  login: async (role: UserRole, username: string, password: string) => {
+    const data = await post<LoginResponse>('/auth/login', { role, username, password }, { skipAuth: true });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ user: data.user, token: data.token }));
+    set({
+      user: data.user,
+      token: data.token,
+      isAuthenticated: true,
+      initialized: true,
+    });
+  },
+
+  logout: () => {
+    localStorage.removeItem(STORAGE_KEY);
+    set({
+      user: null,
+      token: null,
+      isAuthenticated: false,
+    });
+  },
+
+  initialize: () => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        const parsed: StoredAuth = JSON.parse(stored);
+        if (parsed.user && parsed.token) {
+          set({
+            user: parsed.user,
+            token: parsed.token,
+            isAuthenticated: true,
+            initialized: true,
+          });
+          return;
+        }
+      }
+    } catch {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+    set({
+      user: null,
+      token: null,
+      isAuthenticated: false,
+      initialized: true,
+    });
+  },
+}));
